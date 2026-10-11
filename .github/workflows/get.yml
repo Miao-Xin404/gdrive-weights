@@ -5,16 +5,21 @@ on:
     paths:
       - '.github/workflows/get.yml'
 
+permissions:
+  contents: write
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Probe and download from Google Drive
+        id: probe
         run: |
           set +e
           python -m pip install -U gdown requests
@@ -28,33 +33,43 @@ jobs:
             echo "===== embedded folder view probe ====="
             curl -sL "https://drive.google.com/embeddedfolderview?id=${FOLDER}#list" -o embedded.html
             wc -c embedded.html
-            echo "--- file ids ---"
+            echo "--- file ids found ---"
             grep -o '/file/d/[^"/?]*' embedded.html | sort -u
-            echo "--- file titles ---"
+            echo "--- titles ---"
             grep -o 'flip-entry-title[^>]*>[^<]*' embedded.html | head -50
-            echo "===== big files after gdown ====="
-            find . -type f -not -path "./.git/*" -size +1M -exec ls -lh {} +
+            echo "===== per-file fallback ====="
+            FIDS=$(grep -o '/file/d/[^"/?]*' embedded.html | sed 's#/file/d/##' | sort -u)
+            echo "file ids: $FIDS"
+            for fid in $FIDS; do
+              echo "downloading $fid"
+              gdown "$fid"
+            done
+            echo "===== final files ====="
+            find . -type f -not -path "./.git/*" -exec ls -lh {} +
           } > debug.log 2>&1
           cat debug.log
-          echo "===== per-file fallback download ====="
-          FIDS=$(grep -o '/file/d/[^"/?]*' embedded.html | sed 's#/file/d/##' | sort -u)
-          echo "file ids: $FIDS"
-          for fid in $FIDS; do
-            echo "downloading $fid"
-            gdown "$fid" || gdown --fuzzy "https://drive.google.com/uc?id=${fid}"
-          done
-          echo "===== final big files ====="
-          find . -type f -not -path "./.git/*" -size +1M -exec ls -lh {} +
+
+      - name: Upload debug log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-log
+          path: |
+            debug.log
+            embedded.html
 
       - name: Commit debug log back to repo
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git add debug.log embedded.html
-          git commit -m "add google drive probe log" || echo "nothing to commit"
-          git push
+          git commit -m "add google drive probe log"
+          git push origin HEAD:main || echo "push failed but continue"
 
       - name: Publish weights to GitHub Release
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -63,10 +78,8 @@ jobs:
           find . -type f -name "*.pt" >> /tmp/wl
           echo "release candidates:"; cat /tmp/wl
           if [ -s /tmp/wl ]; then
-            tr '\n' '\0' < /tmp/wl | xargs -0 gh release create v1.0 --title "FoundDiff weights" --notes "DA-CLIP and model weights"
-            if [ $? -ne 0 ]; then
-              tr '\n' '\0' < /tmp/wl | xargs -0 gh release upload v1.0 --clobber
-            fi
+            tr '\n' '\0' < /tmp/wl | xargs -0 gh release delete v1.0 -y 2>/dev/null
+            tr '\n' '\0' < /tmp/wl | xargs -0 gh release create v1.0 --title "FoundDiff weights" --notes "DA-CLIP weights"
           else
             echo "no weight files downloaded, see debug.log"
           fi
