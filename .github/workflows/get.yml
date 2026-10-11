@@ -10,38 +10,64 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Download weights from Google Drive
+      - name: Probe and download from Google Drive
         run: |
           set +e
-          python -m pip install -U gdown
-          gdown --version
-          gdown --folder "https://drive.google.com/drive/folders/1B33XyPqC9KkmzmfrCq20-7Xxuf-23PMc" --remaining-ok 2>&1 | tee gdown.log
-          echo "=== downloaded files ==="
-          find . -type f -size +10M -exec ls -lh {} +
-          exit 0
+          python -m pip install -U gdown requests
+          FOLDER="1B33XyPqC9KkmzmfrCq20-7Xxuf-23PMc"
+          {
+            echo "===== gdown version ====="
+            gdown --version
+            echo "===== gdown folder download ====="
+            gdown --folder --remaining-ok "https://drive.google.com/drive/folders/${FOLDER}"
+            echo "GDOWN_EXIT=$?"
+            echo "===== embedded folder view probe ====="
+            curl -sL "https://drive.google.com/embeddedfolderview?id=${FOLDER}#list" -o embedded.html
+            wc -c embedded.html
+            echo "--- file ids ---"
+            grep -o '/file/d/[^"/?]*' embedded.html | sort -u
+            echo "--- file titles ---"
+            grep -o 'flip-entry-title[^>]*>[^<]*' embedded.html | head -50
+            echo "===== big files after gdown ====="
+            find . -type f -not -path "./.git/*" -size +1M -exec ls -lh {} +
+          } > debug.log 2>&1
+          cat debug.log
+          echo "===== per-file fallback download ====="
+          FIDS=$(grep -o '/file/d/[^"/?]*' embedded.html | sed 's#/file/d/##' | sort -u)
+          echo "file ids: $FIDS"
+          for fid in $FIDS; do
+            echo "downloading $fid"
+            gdown "$fid" || gdown --fuzzy "https://drive.google.com/uc?id=${fid}"
+          done
+          echo "===== final big files ====="
+          find . -type f -not -path "./.git/*" -size +1M -exec ls -lh {} +
+
+      - name: Commit debug log back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add debug.log embedded.html
+          git commit -m "add google drive probe log" || echo "nothing to commit"
+          git push
 
       - name: Publish weights to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          find . -type f -name "*.pth" > /tmp/weightlist.txt
-          find . -type f -name "*.pt" >> /tmp/weightlist.txt
-          tr '\n' '\0' < /tmp/weightlist.txt | xargs -0 -r gh release create v1.0 --title "FoundDiff weights" --notes "DA-CLIP.pth and model-400.pt"
-          if [ $? -ne 0 ]; then
-            echo "release create failed, listing files for debugging:"
-            cat /tmp/weightlist.txt
+          find . -type f -name "*.pth" > /tmp/wl
+          find . -type f -name "*.pt" >> /tmp/wl
+          echo "release candidates:"; cat /tmp/wl
+          if [ -s /tmp/wl ]; then
+            tr '\n' '\0' < /tmp/wl | xargs -0 gh release create v1.0 --title "FoundDiff weights" --notes "DA-CLIP and model weights"
+            if [ $? -ne 0 ]; then
+              tr '\n' '\0' < /tmp/wl | xargs -0 gh release upload v1.0 --clobber
+            fi
+          else
+            echo "no weight files downloaded, see debug.log"
           fi
           exit 0
-
-      - name: Upload run log as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: run-log
-          path: gdown.log
