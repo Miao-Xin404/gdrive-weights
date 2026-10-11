@@ -1,0 +1,28 @@
+name: fetch-founddiff-weights
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/get.yml'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download weights from Google Drive
+        run: |
+          pip install -U gdown
+          gdown --folder "https://drive.google.com/drive/folders/1B33XyPqC9KkmzmfrCq20-7Xxuf-23PMc" --remaining-ok
+          echo "=== downloaded files ==="
+          find . -path ./.git -prune -o -type f -size +10M -exec ls -lh {} \;
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mapfile -t files < <(find . -path ./.git -prune -o -type f $ -name "*.pth" -o -name "*.pt" $ -print)
+          echo "files to release: ${files[*]}"
+          gh release create v1.0 "${files[@]}" --title "FoundDiff weights" --notes "DA-CLIP.pth and model-400.pt"
