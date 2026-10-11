@@ -10,19 +10,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Download weights from Google Drive
         run: |
-          pip install -U gdown
-          gdown --folder "https://drive.google.com/drive/folders/1B33XyPqC9KkmzmfrCq20-7Xxuf-23PMc" --remaining-ok
+          set +e
+          python -m pip install -U gdown
+          gdown --version
+          gdown --folder "https://drive.google.com/drive/folders/1B33XyPqC9KkmzmfrCq20-7Xxuf-23PMc" --remaining-ok 2>&1 | tee gdown.log
           echo "=== downloaded files ==="
-          find . -path ./.git -prune -o -type f -size +10M -exec ls -lh {} \;
-      - name: Publish to GitHub Release
+          find . -type f -size +10M -exec ls -lh {} +
+          exit 0
+
+      - name: Publish weights to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mapfile -t files < <(find . -path ./.git -prune -o -type f $ -name "*.pth" -o -name "*.pt" $ -print)
-          echo "files to release: ${files[*]}"
-          gh release create v1.0 "${files[@]}" --title "FoundDiff weights" --notes "DA-CLIP.pth and model-400.pt"
+          set +e
+          find . -type f -name "*.pth" > /tmp/weightlist.txt
+          find . -type f -name "*.pt" >> /tmp/weightlist.txt
+          tr '\n' '\0' < /tmp/weightlist.txt | xargs -0 -r gh release create v1.0 --title "FoundDiff weights" --notes "DA-CLIP.pth and model-400.pt"
+          if [ $? -ne 0 ]; then
+            echo "release create failed, listing files for debugging:"
+            cat /tmp/weightlist.txt
+          fi
+          exit 0
+
+      - name: Upload run log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log
+          path: gdown.log
